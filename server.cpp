@@ -5,6 +5,9 @@
 	The server repeats back anything it receives from the client.
 */
 
+// Used this link as a resource for implementation
+// https://tangentsoft.net/wskfaq/examples/basics/select-server.html
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
