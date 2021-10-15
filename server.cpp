@@ -13,16 +13,15 @@
 
 #include "connection.h"
 #include "utils.h"
+#include <iostream>
 
 #pragma comment(lib, "ws2_32.lib")
-
 
 // The IP address for the server to listen on
 #define SERVERIP "127.0.0.1"
 
 // The TCP port number for the server to listen on
 #define SERVERPORT 5555
-
 
 int main()
 {
@@ -32,6 +31,7 @@ int main()
 
 	// Create a TCP socket that we'll use to listen for connections.
 	SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+
 	if (serverSocket == INVALID_SOCKET)
 	{
 		die("socket failed");
@@ -62,7 +62,7 @@ int main()
 	printf("Server socket listening\n");
 
 	// The list of clients currently connected to the server.
-	std::list<Connection *> conns;
+	std::list<Connection*> clientConns;
 
 	// The server's main loop, where we'll wait for new connections to
 	// come in, or for new data to appear on our existing connections.
@@ -70,18 +70,25 @@ int main()
 	{
 		// The structure that describes the set of sockets we're interested in.
 		fd_set readable;
-		FD_ZERO(&readable);
+		fd_set writeable;
+		FD_ZERO(&readable);			// Initialise/reset the set to zero
+		FD_ZERO(&writeable);		// Initialise/reset the set to zero
 
 		// Add the server socket, which will become "readable" if there's a new
 		// connection to accept.
-		FD_SET(serverSocket, &readable);
+		FD_SET(serverSocket, &readable);		// Add the server socket to the readable set, allowing us to read from clients
 
 		// Add all of the connected clients' sockets.
-		for (auto conn: conns)
+		for (auto conn: clientConns)
 		{
-			if (conn->wantRead())
+			if (conn->wantRead() < MESSAGESIZE)
 			{
 				FD_SET(conn->sock(), &readable);
+			}
+
+			if (conn->wantWrite() > 0)
+			{
+				FD_SET(conn->sock(), &writeable);
 			}
 		}
 
@@ -91,18 +98,24 @@ int main()
 		timeout.tv_sec = 2;
 		timeout.tv_usec = 500000;
 
-		// Wait for one of the sockets to become readable.
+		// Wait for one of the sockets to become readable, or writeable
 		// (We can only get away with passing 0 for the first argument here because
 		// we're on Windows -- other sockets implementations need a proper value there.)
-		int count = select(0, &readable, NULL, NULL, &timeout);
+		int count = select(0, &readable, &writeable, NULL, &timeout);
+
 		if (count == SOCKET_ERROR)
 		{
 			die("select failed");
 		}
-		printf("%d clients; %d sockets are ready\n", conns.size(), count);
+
+		printf("%d clients; %d sockets are ready\n", clientConns.size(), count);
 		// readable now tells us which sockets are ready.
 		// If count == 0 (i.e. no sockets are ready) then the timeout occurred.
 
+		// If count > 0, then something happened on one of the sockets
+		// Was it the server socker? check it
+
+		// Checking server socket
 		// Is there a new connection to accept?
 		if (FD_ISSET(serverSocket, &readable))
 		{
@@ -112,26 +125,60 @@ int main()
 			sockaddr_in clientAddr;
 			int addrSize = sizeof(clientAddr);
 			SOCKET clientSocket = accept(serverSocket, (sockaddr *) &clientAddr, &addrSize);
+
 			if (clientSocket == INVALID_SOCKET)
 			{
 				printf("accept failed\n");
 				continue;
 			}
 
-			// Create a new Connection object, and add it to the collection.
-			conns.push_back(new Connection(clientSocket));
+			if (clientConns.size() == 2)
+			{
+				printf("Cannot add anymore client connections!\n");
+
+				// Return a msg saying sorry server full instead of closing socket
+				int error = closesocket(clientSocket);
+
+				if (error == SOCKET_ERROR)
+				{
+					die("Close client socket failed!");
+				}
+			}
+			else
+			{
+				// Create a new Connection object, and add it to the collection.
+				clientConns.push_back(new Connection(clientSocket));
+
+				// #### SEE SELECT SERVER .CPP FILE ####
+				// Mark the socket as non-blocking for safety?
+				// I thought that select would not be able to choose this socket unless it knew that it would not block
+				// So why is this needed, or is a just incase kind of thing?
+				unsigned long nNoBlock = 1;
+				ioctlsocket(clientSocket, FIONBIO, &nNoBlock);
+			}
 		}
 
+		// Checking all the client sockets
 		// Check each of the clients.
-		for (auto it = conns.begin(); it != conns.end(); )  // note no ++it here
+		for (auto it = clientConns.begin(); it != clientConns.end(); )  // note no ++it here
 		{
-			Connection *conn = *it;
+			Connection* conn = *it;
 			bool dead = false;
 
 			// Is there data to read from this client's socket?
 			if (FD_ISSET(conn->sock(), &readable))
 			{
+				std::cout << "Socket " << conn->sock() << " became readable; handling it.\n";
+
 				dead |= conn->doRead();
+			}
+
+			// Is there data to write to this client's socket?
+			if (FD_ISSET(conn->sock(), &writeable))
+			{
+				std::cout << "Socket " << conn->sock() << " became writeable; handling it.\n";
+
+				dead |= conn->doWrite();
 			}
 
 			if (dead)
@@ -139,7 +186,7 @@ int main()
 				// The client said it was dead -- so free the object,
 				// and remove it from the conns list.
 				delete conn;
-				it = conns.erase(it);
+				it = clientConns.erase(it);
 			}
 			else
 			{

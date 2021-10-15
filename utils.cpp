@@ -9,7 +9,8 @@
 #pragma comment(lib, "ws2_32.lib")
 
 
-void die(const char *message) {
+void die(const char *message)
+{
 	fprintf(stderr, "Error: %s (WSAGetLastError() = %d)\n", message, WSAGetLastError());
 
 #ifdef _DEBUG
